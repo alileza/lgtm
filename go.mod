@@ -1,4 +1,4 @@
-module lgtm
+module github.com/alileza/lgtm
 
 go 1.25
 
