@@ -5,7 +5,11 @@ Slack-to-GitHub bot that listens for messages and approves pull requests.
 ## Install
 
 ```bash
+# Latest version
 go install github.com/alileza/lgtm@latest
+
+# Or specific version
+go install github.com/alileza/lgtm@4078b42
 ```
 
 ## Setup
