@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
 	"time"
 
 	"github.com/slack-go/slack"
@@ -46,7 +45,7 @@ func NewSlackClient(config *Configuration, matcher *PatternMatcher, githubClient
 
 // Start begins the Slack Socket Mode connection
 func (sc *SlackClient) Start(ctx context.Context) error {
-	log.Printf("[SLACK] Connecting to Slack workspace...")
+	logInfo("Connecting to Slack workspace...")
 	
 	// Test authentication first
 	if err := sc.validateTokens(ctx); err != nil {
@@ -68,17 +67,17 @@ func (sc *SlackClient) validateTokens(ctx context.Context) error {
 		return &AuthenticationError{Service: "Slack", Message: fmt.Sprintf("bot token validation failed: %v", err)}
 	}
 	
-	log.Printf("[SLACK] [AUTH] Bot authenticated as: %s (team: %s)", authResponse.User, authResponse.Team)
+	logInfo("Authenticated as Slack user: %s (team: %s)", authResponse.User, authResponse.Team)
 	
 	// App token validation is implicit - if Socket Mode connection succeeds, the app token is valid
-	log.Printf("[SLACK] [AUTH] App token validated successfully")
+	logDebug("App token validated successfully")
 	
 	return nil
 }
 
 // Stop gracefully shuts down the Slack client
 func (sc *SlackClient) Stop(ctx context.Context) error {
-	log.Printf("Stopping Slack client...")
+	logInfo("Stopping Slack client...")
 	// Socket Mode client will stop when context is canceled
 	return nil
 }
@@ -90,7 +89,7 @@ func (sc *SlackClient) handleEvents(ctx context.Context) {
 		case socketmode.EventTypeEventsAPI:
 			eventsAPIEvent, ok := evt.Data.(slackevents.EventsAPIEvent)
 			if !ok {
-				log.Printf("Unexpected event type: %T", evt.Data)
+				logDebug("Unexpected event type: %T", evt.Data)
 				sc.socketClient.Ack(*evt.Request)
 				continue
 			}
@@ -102,16 +101,16 @@ func (sc *SlackClient) handleEvents(ctx context.Context) {
 			sc.handleEventsAPIEvent(ctx, eventsAPIEvent)
 			
 		case socketmode.EventTypeConnecting:
-			log.Printf("Connecting to Slack with Socket Mode...")
+			logDebug("Connecting to Slack with Socket Mode...")
 			
 		case socketmode.EventTypeConnectionError:
-			log.Printf("Connection failed. Retrying later...")
+			logWarn("Connection failed. Retrying later...")
 			
 		case socketmode.EventTypeConnected:
-			log.Printf("Connected to Slack workspace")
+			logInfo("Connected to Slack workspace")
 			
 		default:
-			log.Printf("Unexpected event type received: %s", evt.Type)
+			logDebug("Unexpected event type received: %s", evt.Type)
 		}
 	}
 }
@@ -153,11 +152,8 @@ func (sc *SlackClient) handleMessageEvent(ctx context.Context, event *slackevent
 	}
 	
 	// Use structured logging for message events
-	if sc.config.LogLevel == "debug" {
-		log.Printf("[SLACK] [MESSAGE] channel=%s user=%s text=%q", event.Channel, event.User, event.Text)
-	} else {
-		log.Printf("[SLACK] Message received from channel %s", event.Channel)
-	}
+	logDebug("Message received: channel=%s user=%s text=%q", event.Channel, event.User, event.Text)
+	logInfo("Message received from channel %s", event.Channel)
 	
 	// Process the message for pattern matching
 	sc.processMessage(ctx, slackMsg)
@@ -168,7 +164,7 @@ func (sc *SlackClient) processMessage(ctx context.Context, msg *SlackMessage) {
 	// Attempt to match the message against the configured pattern
 	match, err := sc.matcher.Match(msg.Text)
 	if err != nil {
-		log.Printf("Pattern matching error: %v", err)
+		logError("Pattern matching error: %v", err)
 		return
 	}
 	
@@ -179,14 +175,14 @@ func (sc *SlackClient) processMessage(ctx context.Context, msg *SlackMessage) {
 	
 	// Pattern matched!
 	match.SourceMessage = msg
-	log.Printf("[MATCHER] [MATCH] channel=%s user=%s pattern=%q matched_text=%q", 
-		msg.Channel, msg.User, match.Pattern, match.MatchedText)
+	logInfo("Pattern matched in channel %s from user %s", msg.Channel, msg.User)
+	logDebug("Pattern details: pattern=%q matched_text=%q", match.Pattern, match.MatchedText)
 	
 	// Process GitHub PR approvals if any PR references found
 	if len(match.PRReferences) > 0 {
 		sc.processPRApprovals(ctx, match)
 	} else {
-		log.Printf("[SLACK] Pattern matched but no PR references found in message")
+		logInfo("Pattern matched but no PR references found in message")
 		// React with X emoji - no PR references found
 		sc.addReaction(msg.Channel, msg.Timestamp, "x")
 	}
@@ -211,7 +207,7 @@ func (sc *SlackClient) processPRApprovals(ctx context.Context, match *PatternMat
 		
 		// Skip if we still don't have owner/repo
 		if owner == "" || repo == "" {
-			log.Printf("[SLACK] [PR_APPROVAL] [SKIP] pr_number=%d reason=missing_owner_or_repo", prRef.Number)
+			logWarn("Skipping PR %d: missing owner or repo", prRef.Number)
 			continue
 		}
 		
@@ -233,30 +229,29 @@ func (sc *SlackClient) processPRApprovals(ctx context.Context, match *PatternMat
 
 // processApproval processes a single PR approval request
 func (sc *SlackClient) processApproval(ctx context.Context, req *ApprovalRequest) {
-	log.Printf("[SLACK] [PR_APPROVAL] [START] owner=%s repo=%s pr_number=%d", req.Owner, req.Repository, req.PRNumber)
+	logDebug("Starting PR approval: %s/%s#%d", req.Owner, req.Repository, req.PRNumber)
 	
 	// Validate PR exists and is in valid state first
 	if err := sc.githubClient.ValidatePRReference(ctx, req.Owner, req.Repository, req.PRNumber); err != nil {
-		log.Printf("[SLACK] [PR_APPROVAL] [VALIDATION_FAILED] pr_number=%d error=%v", req.PRNumber, err)
+		logError("PR validation failed for %s/%s#%d: %v", req.Owner, req.Repository, req.PRNumber, err)
 		return
 	}
 	
 	// Approve PR with retry logic
 	result, err := sc.githubClient.ApprovePRWithRetry(ctx, req)
 	if err != nil {
-		log.Printf("[SLACK] [PR_APPROVAL] [ERROR] pr_number=%d error=%v", req.PRNumber, err)
+		logError("PR approval failed for %s/%s#%d: %v", req.Owner, req.Repository, req.PRNumber, err)
 		return
 	}
 	
 	// Log the result
 	if result.Success {
-		log.Printf("[SLACK] [PR_APPROVAL] [SUCCESS] pr_number=%d review_id=%d retries=%d", 
-			req.PRNumber, result.ReviewID, result.RetryAttempts)
+		logInfo("Approved PR %s/%s#%d (review ID: %d)", req.Owner, req.Repository, req.PRNumber, result.ReviewID)
+		logDebug("PR approval details: retries=%d", result.RetryAttempts)
 		// React with checkmark on success
 		sc.addReaction(req.SourceChannel, req.SourceMessage.Timestamp, "white_check_mark")
 	} else {
-		log.Printf("[SLACK] [PR_APPROVAL] [FAILED] pr_number=%d error=%s retries=%d", 
-			req.PRNumber, result.Error, result.RetryAttempts)
+		logError("Failed to approve PR %s/%s#%d: %s (retries: %d)", req.Owner, req.Repository, req.PRNumber, result.Error, result.RetryAttempts)
 		// React with X on failure
 		sc.addReaction(req.SourceChannel, req.SourceMessage.Timestamp, "x")
 	}
@@ -270,8 +265,8 @@ func (sc *SlackClient) addReaction(channel, timestamp, emoji string) {
 	}
 	
 	if err := sc.api.AddReaction(emoji, msgRef); err != nil {
-		log.Printf("[SLACK] [REACTION] [ERROR] Failed to add reaction %s: %v", emoji, err)
+		logDebug("Failed to add reaction %s: %v", emoji, err)
 	} else {
-		log.Printf("[SLACK] [REACTION] Added reaction %s to message %s", emoji, timestamp)
+		logDebug("Added reaction %s to message %s", emoji, timestamp)
 	}
 }

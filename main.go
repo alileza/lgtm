@@ -6,10 +6,40 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/urfave/cli/v2"
 )
+
+// Global log level variable
+var logLevel string
+
+// logDebug logs only if level is debug
+func logDebug(format string, v ...interface{}) {
+	if logLevel == "debug" {
+		log.Printf("[DEBUG] "+format, v...)
+	}
+}
+
+// logInfo logs for info level and above
+func logInfo(format string, v ...interface{}) {
+	if logLevel == "debug" || logLevel == "info" {
+		log.Printf("[INFO] "+format, v...)
+	}
+}
+
+// logWarn logs for warn level and above
+func logWarn(format string, v ...interface{}) {
+	if logLevel == "debug" || logLevel == "info" || logLevel == "warn" {
+		log.Printf("[WARN] "+format, v...)
+	}
+}
+
+// logError logs for all levels
+func logError(format string, v ...interface{}) {
+	log.Printf("[ERROR] "+format, v...)
+}
 
 func main() {
 	app := &cli.App{
@@ -126,12 +156,19 @@ func runCommand(c *cli.Context) error {
 		return err
 	}
 	
+	// Set global log level
+	logLevel = strings.ToLower(config.LogLevel)
+	
 	// Validate configuration
 	if err := validateConfiguration(config); err != nil {
 		return fmt.Errorf("%v\n\nTroubleshooting:\n- Ensure all required environment variables are set: GITHUB_TOKEN, SLACK_BOT_TOKEN, SLACK_APP_TOKEN\n- Check token formats: Slack bot token should start with 'xoxb-', app token with 'xapp-'\n- Verify regex pattern syntax if using custom SLACK_MESSAGE_PATTERN", err)
 	}
 	
-	log.Printf("[CONFIG] Configuration loaded successfully")
+	// Show configuration summary
+	logInfo("Configuration loaded - Pattern: '%s', Channel: %s, Log Level: %s", 
+		config.MessagePattern, 
+		func() string { if config.SlackChannelID != "" { return config.SlackChannelID } else { return "all channels" } }(),
+		config.LogLevel)
 	
 	// Create pattern matcher
 	matcher, err := NewPatternMatcher(config.MessagePattern)
@@ -139,7 +176,7 @@ func runCommand(c *cli.Context) error {
 		return fmt.Errorf("failed to create pattern matcher: %v\n\nTroubleshooting:\n- Check your SLACK_MESSAGE_PATTERN environment variable for valid regex syntax\n- Test your pattern at https://regex101.com/\n- Use '.*' to match all messages (default)", err)
 	}
 	
-	log.Printf("[MATCHER] Pattern matcher initialized with pattern: %s", config.MessagePattern)
+	logDebug("Pattern matcher initialized with pattern: %s", config.MessagePattern)
 	
 	// Set up graceful shutdown context
 	ctx, cancel := context.WithCancel(context.Background())
@@ -164,14 +201,14 @@ func runCommand(c *cli.Context) error {
 	// Handle shutdown signals
 	go handleShutdown(cancel)
 	
-	log.Printf("[MAIN] Bot ready - listening for messages...")
+	logInfo("Bot ready - listening for messages...")
 	
 	// Start Slack client (blocking)
 	if err := slackClient.Start(ctx); err != nil && ctx.Err() == nil {
 		return fmt.Errorf("Slack client error: %v\n\nTroubleshooting:\n- Check that Slack app has correct OAuth scopes (app_mentions:read, channels:history, chat:write)\n- Verify Socket Mode is enabled in Slack app settings\n- Ensure bot token and app token are both valid and active\n- Check Slack app event subscriptions are configured", err)
 	}
 	
-	log.Printf("[MAIN] Bot shutdown complete")
+	logInfo("Bot shutdown complete")
 	return nil
 }
 

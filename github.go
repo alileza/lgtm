@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
 	"strings"
 	"time"
 
@@ -69,7 +68,7 @@ func (gc *GitHubClient) ValidatePermissions(ctx context.Context) error {
 		return &AuthenticationError{Service: "GitHub", Message: fmt.Sprintf("authentication failed: %v", err)}
 	}
 	
-	log.Printf("[GITHUB] [AUTH] Authenticated as user: %s", user.GetLogin())
+	logInfo("Authenticated as GitHub user: %s", user.GetLogin())
 	
 	// Test if we can access the repository (if default repo is configured)
 	if gc.config.DefaultOwner != "" && gc.config.DefaultRepo != "" {
@@ -82,8 +81,7 @@ func (gc *GitHubClient) ValidatePermissions(ctx context.Context) error {
 			}
 		}
 		
-		log.Printf("[GITHUB] [AUTH] Repository access confirmed: %s/%s", 
-			gc.config.DefaultOwner, gc.config.DefaultRepo)
+		logInfo("Repository access confirmed: %s/%s", gc.config.DefaultOwner, gc.config.DefaultRepo)
 	}
 	
 	return nil
@@ -100,7 +98,7 @@ func (gc *GitHubClient) GetAuthenticatedUser(ctx context.Context) (*github.User,
 
 // ValidatePRReference checks if a PR exists and is in a valid state for approval
 func (gc *GitHubClient) ValidatePRReference(ctx context.Context, owner, repo string, prNumber int) error {
-	log.Printf("[GITHUB] [VALIDATION] owner=%s repo=%s pr_number=%d", owner, repo, prNumber)
+	logDebug("Validating PR: %s/%s#%d", owner, repo, prNumber)
 	
 	// Get the pull request
 	pr, response, err := gc.client.PullRequests.Get(ctx, owner, repo, prNumber)
@@ -125,8 +123,7 @@ func (gc *GitHubClient) ValidatePRReference(ctx context.Context, owner, repo str
 		return fmt.Errorf("PR #%d is already merged", prNumber)
 	}
 	
-	log.Printf("[GITHUB] [VALIDATION] [SUCCESS] pr_number=%d state=%s mergeable=%v", 
-		prNumber, pr.GetState(), pr.GetMergeable())
+	logDebug("PR validation successful: %s/%s#%d state=%s mergeable=%v", owner, repo, prNumber, pr.GetState(), pr.GetMergeable())
 	
 	return nil
 }
@@ -138,7 +135,7 @@ func (gc *GitHubClient) ApprovePR(ctx context.Context, req *ApprovalRequest) (*A
 		ProcessedAt: time.Now(),
 	}
 	
-	log.Printf("[GITHUB] [PR_APPROVAL] owner=%s repo=%s pr_number=%d", req.Owner, req.Repository, req.PRNumber)
+	logDebug("Approving PR: %s/%s#%d", req.Owner, req.Repository, req.PRNumber)
 	
 	// Create review request with approval
 	reviewRequest := &github.PullRequestReviewRequest{
@@ -177,7 +174,7 @@ func (gc *GitHubClient) ApprovePR(ctx context.Context, req *ApprovalRequest) (*A
 	result.Success = true
 	result.ReviewID = review.GetID()
 	
-	log.Printf("[GITHUB] [PR_APPROVAL] [SUCCESS] pr_number=%d review_id=%d", req.PRNumber, result.ReviewID)
+	logDebug("PR approved successfully: %s/%s#%d review_id=%d", req.Owner, req.Repository, req.PRNumber, result.ReviewID)
 	
 	return result, nil
 }
@@ -194,8 +191,7 @@ func (gc *GitHubClient) ApprovePRWithRetry(ctx context.Context, req *ApprovalReq
 		if attempt > 0 {
 			// Exponential backoff: 2^attempt seconds
 			delay := time.Duration(1<<uint(attempt)) * baseDelay
-			log.Printf("[GITHUB] [RETRY] attempt=%d/%d delay=%v pr_number=%d", 
-				attempt+1, maxRetries, delay, req.PRNumber)
+			logDebug("Retrying PR approval: attempt=%d/%d delay=%v pr_number=%d", attempt+1, maxRetries, delay, req.PRNumber)
 			
 			select {
 			case <-time.After(delay):
@@ -208,7 +204,7 @@ func (gc *GitHubClient) ApprovePRWithRetry(ctx context.Context, req *ApprovalReq
 		if err != nil {
 			lastErr = err
 			lastResult = result
-			log.Printf("[GITHUB] [RETRY] [ERROR] attempt=%d error=%v", attempt+1, err)
+			logDebug("PR approval attempt failed: attempt=%d error=%v", attempt+1, err)
 			continue
 		}
 		
@@ -228,8 +224,7 @@ func (gc *GitHubClient) ApprovePRWithRetry(ctx context.Context, req *ApprovalReq
 	// All retries exhausted
 	if lastResult != nil {
 		lastResult.RetryAttempts = maxRetries
-		log.Printf("[GITHUB] [RETRY] [EXHAUSTED] pr_number=%d final_error=%s", 
-			req.PRNumber, lastResult.Error)
+		logWarn("PR approval retries exhausted: %s/%s#%d final_error=%s", req.Owner, req.Repository, req.PRNumber, lastResult.Error)
 		return lastResult, nil
 	}
 	
