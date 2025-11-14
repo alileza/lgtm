@@ -31,7 +31,13 @@
 
 *GATE: Must pass before Phase 0 research. Re-check after Phase 1 design.*
 
-[Gates determined based on constitution file]
+- [ ] **Clear is Better than Clever**: Solution prioritizes readability and maintainability
+- [ ] **Lazy and Pragmatic**: Only implements what is needed, avoids over-engineering
+- [ ] **Minimal Dependencies**: Justifies any third-party dependencies, prefers standard library
+- [ ] **Clear Boundaries**: File/module splits are based on clear functional boundaries
+- [ ] **Simple Directory Structure**: Avoids unnecessary complexity in organization
+
+*If any checks fail, document justification in Complexity Tracking section below.*
 
 ## Project Structure
 

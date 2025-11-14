@@ -1,0 +1,22 @@
+# Go specific
+*.exe
+*.test
+vendor/
+*.out
+
+# Universal
+.DS_Store
+Thumbs.db
+*.tmp
+*.swp
+.vscode/
+.idea/
+
+# Environment and secrets
+.env*
+*.log
+
+# Build artifacts
+lgtm
+dist/
+build/
