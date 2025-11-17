@@ -1,14 +1,18 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
+	"github.com/atotto/clipboard"
 	"github.com/urfave/cli/v2"
 )
 
@@ -45,6 +49,29 @@ func main() {
 	app := &cli.App{
 		Name:  "lgtm",
 		Usage: "Slack-to-GitHub bot that monitors Slack messages and approves GitHub pull requests",
+		Flags: []cli.Flag{
+			&cli.StringFlag{
+				Name:     "github-token",
+				Usage:    "GitHub personal access token",
+				EnvVars:  []string{"GITHUB_TOKEN"},
+			},
+			&cli.StringFlag{
+				Name:    "github-owner",
+				Usage:   "Default repository owner",
+				EnvVars: []string{"GITHUB_OWNER"},
+			},
+			&cli.StringFlag{
+				Name:    "github-repo",
+				Usage:   "Default repository name",
+				EnvVars: []string{"GITHUB_REPO"},
+			},
+			&cli.StringFlag{
+				Name:    "log-level",
+				Usage:   "Logging level (debug, info, warn, error)",
+				EnvVars: []string{"LOG_LEVEL"},
+				Value:   "info",
+			},
+		},
 		Commands: []*cli.Command{
 			{
 				Name:    "run",
@@ -137,8 +164,8 @@ func main() {
 			},
 		},
 		Action: func(c *cli.Context) error {
-			// Default action is to run
-			return runCommand(c)
+			// Default action is to approve PR from clipboard or stdin
+			return approvePRCommand(c)
 		},
 	}
 
@@ -260,4 +287,134 @@ func versionCommand(c *cli.Context) error {
 	fmt.Printf("lgtm version 1.0.0\n")
 	fmt.Printf("Go version: %s\n", "go1.25")
 	return nil
+}
+
+// approvePRCommand handles PR approval from clipboard or stdin
+func approvePRCommand(c *cli.Context) error {
+	// Parse minimal configuration for GitHub client
+	githubToken := c.String("github-token")
+	if githubToken == "" {
+		githubToken = os.Getenv("GITHUB_TOKEN")
+	}
+	if githubToken == "" {
+		return fmt.Errorf("GitHub token is required. Set GITHUB_TOKEN environment variable or use --github-token flag")
+	}
+
+	config := &Configuration{
+		GitHubToken:  githubToken,
+		DefaultOwner: c.String("github-owner"),
+		DefaultRepo:  c.String("github-repo"),
+		LogLevel:     c.String("log-level"),
+	}
+
+	// Set global log level
+	logLevel = strings.ToLower(config.LogLevel)
+
+	// Get PR URL from stdin or clipboard
+	prURL, err := getPRURL()
+	if err != nil {
+		return fmt.Errorf("failed to get PR URL: %v", err)
+	}
+
+	if prURL == "" {
+		return fmt.Errorf("no PR URL found in stdin or clipboard")
+	}
+
+	logInfo("Found PR URL: %s", prURL)
+
+	// Extract PR reference from URL
+	matcher, err := NewPatternMatcher(".*")
+	if err != nil {
+		return fmt.Errorf("failed to create pattern matcher: %v", err)
+	}
+
+	prRefs, err := matcher.ExtractPRReferences(prURL)
+	if err != nil {
+		return fmt.Errorf("failed to extract PR reference: %v", err)
+	}
+
+	if len(prRefs) == 0 {
+		return fmt.Errorf("no valid GitHub PR URL found: %s", prURL)
+	}
+
+	// Create GitHub client
+	githubClient, err := NewGitHubClient(config)
+	if err != nil {
+		return fmt.Errorf("failed to create GitHub client: %v", err)
+	}
+
+	ctx := context.Background()
+
+	// Approve each PR found
+	for _, prRef := range prRefs {
+		// Fill in default owner/repo if missing
+		if prRef.Owner == "" {
+			prRef.Owner = config.DefaultOwner
+		}
+		if prRef.Repository == "" {
+			prRef.Repository = config.DefaultRepo
+		}
+
+		if prRef.Owner == "" || prRef.Repository == "" {
+			logWarn("Skipping PR #%d: missing owner or repository (use --github-owner and --github-repo flags or full URL)", prRef.Number)
+			continue
+		}
+
+		// Validate PR exists
+		if err := githubClient.ValidatePRReference(ctx, prRef.Owner, prRef.Repository, prRef.Number); err != nil {
+			logError("Failed to validate PR %s/%s#%d: %v", prRef.Owner, prRef.Repository, prRef.Number, err)
+			continue
+		}
+
+		// Create approval request
+		req := &ApprovalRequest{
+			Owner:       prRef.Owner,
+			Repository:  prRef.Repository,
+			PRNumber:    prRef.Number,
+			Message:     "Approved via CLI",
+			Timestamp:   time.Now(),
+		}
+
+		// Approve the PR
+		result, err := githubClient.ApprovePRWithRetry(ctx, req)
+		if err != nil {
+			logError("Failed to approve PR %s/%s#%d: %v", prRef.Owner, prRef.Repository, prRef.Number, err)
+			continue
+		}
+
+		if result.Success {
+			fmt.Printf("✅ Successfully approved PR %s/%s#%d (Review ID: %d)\n", prRef.Owner, prRef.Repository, prRef.Number, result.ReviewID)
+		} else {
+			fmt.Printf("❌ Failed to approve PR %s/%s#%d: %s\n", prRef.Owner, prRef.Repository, prRef.Number, result.Error)
+		}
+	}
+
+	return nil
+}
+
+// getPRURL gets PR URL from stdin (if available) or clipboard
+func getPRURL() (string, error) {
+	// Check if stdin has data (non-interactive mode)
+	stat, err := os.Stdin.Stat()
+	if err != nil {
+		return "", err
+	}
+
+	// If stdin has data (pipe or redirection), read from it
+	if (stat.Mode() & os.ModeCharDevice) == 0 {
+		reader := bufio.NewReader(os.Stdin)
+		input, err := reader.ReadString('\n')
+		if err != nil && err != io.EOF {
+			return "", err
+		}
+		return strings.TrimSpace(input), nil
+	}
+
+	// Otherwise, try to read from clipboard
+	clipboardContent, err := clipboard.ReadAll()
+	if err != nil {
+		return "", fmt.Errorf("failed to read clipboard: %v", err)
+	}
+
+	return strings.TrimSpace(clipboardContent), nil
 }
